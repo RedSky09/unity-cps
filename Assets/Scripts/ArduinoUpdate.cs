@@ -8,17 +8,28 @@ public class ArduinoUpdate : MonoBehaviour
     public string portName = "COM5";
     public int baudRate = 115200;
 
-    [Header("Mapping Settings")]
-    public float scale = 0.5f;
+    [Header("Jump & Ground Settings")]
+    public float groundY = -999f;        // kalau -999, akan diisi otomatis dari posisi awal bola
+    public float jumpVelocity = 6f;      // kecepatan awal lompat
+    public float groundRestitution = 0.8f; // seberapa mantul ketika kena ground
+    public float groundEpsilon = 0.05f;  // toleransi cek ground
 
     private SerialPort sp;
     private Rigidbody rb;
-    private Vector3 lastVelocity;
-    private Vector3 lastPosition;
+
+    private bool lastJumpPressed = false;
 
     void Start()
     {
         rb = GetComponent<Rigidbody>();
+        rb.useGravity = true;
+        rb.constraints = RigidbodyConstraints.FreezeRotation; // opsional biar nggak muter2 aneh
+
+        // jika groundY belum di-set di Inspector, pakai posisi awal bola
+        if (Mathf.Approximately(groundY, -999f))
+        {
+            groundY = rb.position.y;
+        }
 
         sp = new SerialPort(portName, baudRate);
         sp.ReadTimeout = 10;
@@ -36,8 +47,6 @@ public class ArduinoUpdate : MonoBehaviour
         {
             Debug.LogError("Failed to open serial port " + portName + " : " + e.Message);
         }
-
-        lastPosition = rb.position;
     }
 
     void OnDestroy()
@@ -47,15 +56,9 @@ public class ArduinoUpdate : MonoBehaviour
             try
             {
                 if (sp.IsOpen)
-                {
                     sp.Close();
-                    Debug.Log("Serial port closed: " + portName);
-                }
             }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning("Error closing serial port: " + e.Message);
-            }
+            catch { }
         }
     }
 
@@ -67,53 +70,77 @@ public class ArduinoUpdate : MonoBehaviour
 
         try
         {
-            // baca semua data dan simpan yang terakhir
             while (sp.BytesToRead > 0)
+            {
                 latestLine = sp.ReadLine();
+            }
         }
-        catch (System.TimeoutException)
+        catch
         {
-            // tidak ada baris lengkap
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning("Serial read error: " + e.Message);
+            // abaikan error kecil (timeout dsb)
         }
 
-        // tidak ada data baru
         if (string.IsNullOrEmpty(latestLine))
             return;
 
-        // Format: "x:0.1234 y:0.5678"
+        // Format dari Arduino:
+        // "x:12.3456 y:-3.2100 j:0" / "x:.. y:.. j:1"
         string[] parts = latestLine.Split(' ');
-        if (parts.Length != 2)
+        if (parts.Length < 2)
             return;
+
+        float xVal, yVal;
+        bool jumpPressed = false;
 
         try
         {
-            float xVal = float.Parse(parts[0].Substring(2), CultureInfo.InvariantCulture);
-            float yVal = float.Parse(parts[1].Substring(2), CultureInfo.InvariantCulture);
+            xVal = float.Parse(parts[0].Substring(2), CultureInfo.InvariantCulture);
+            yVal = float.Parse(parts[1].Substring(2), CultureInfo.InvariantCulture);
 
-            // target posisi berdasarkan joystick
-            Vector3 target = new Vector3(xVal * scale, rb.position.y, yVal * scale);
-
-            // ANTI-Teleport smoothing:
-            float maxStep = 0.1f;   // gerakan maksimal per frame
-            Vector3 direction = target - rb.position;
-
-            // jika target terlalu jauh, buat langkah kecil
-            if (direction.magnitude > maxStep)
-                direction = direction.normalized * maxStep;
-
-            rb.MovePosition(rb.position + direction); // inilah inti solusi 4
+            if (parts.Length >= 3 && parts[2].StartsWith("j:"))
+            {
+                int j = int.Parse(parts[2].Substring(2), CultureInfo.InvariantCulture);
+                jumpPressed = (j == 1);
+            }
         }
-        catch (System.Exception e)
+        catch
         {
-            Debug.LogWarning($"Parse error for line '{latestLine}' : {e.Message}");
+            // gagal parse → lewati frame
+            return;
         }
 
-        // hitung velocity manual
-        lastVelocity = (rb.position - lastPosition) / Time.fixedDeltaTime;
-        lastPosition = rb.position;
+        // --- Update posisi horizontal dari Arduino (XZ) ---
+        Vector3 target = new Vector3(xVal, rb.position.y, yVal);
+        rb.MovePosition(target);
+
+        // --- Cek apakah bola sedang di ground ---
+        bool isGrounded =
+            Mathf.Abs(rb.position.y - groundY) <= groundEpsilon &&
+            rb.linearVelocity.y <= 0.05f;
+
+        // --- Trigger jump pada edge (0 -> 1) dan saat grounded ---
+        if (jumpPressed && !lastJumpPressed && isGrounded)
+        {
+            Vector3 v = rb.linearVelocity;
+            v.y = jumpVelocity;      // lompat ke atas
+            rb.linearVelocity = v;
+        }
+
+        lastJumpPressed = jumpPressed;
+
+        // --- Pantulan manual saat menyentuh ground setelah lompat ---
+        // kondisi: mendekati ground dari atas dan sedang turun (vy < 0)
+        if (rb.position.y <= groundY + groundEpsilon && rb.linearVelocity.y < -0.01f)
+        {
+            // clamp posisi persis di ground
+            Vector3 p = rb.position;
+            p.y = groundY;
+            rb.position = p;
+
+            // pantulkan velocity Y
+            Vector3 v = rb.linearVelocity;
+            v.y = -v.y * groundRestitution;
+            rb.linearVelocity = v;
+        }
     }
 }

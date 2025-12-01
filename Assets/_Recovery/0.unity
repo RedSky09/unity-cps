@@ -870,17 +870,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ArduinoUpdate
   portName: COM5
   baudRate: 115200
-  scale: 2
-  maxSpeed: 3
-  acceleration: 20
-  bounceRestitution: 0.7
-  bounceTangentDamping: 0.4
-  bounceStrength: 1.2
-  minStopSpeed: 0.05
-  minBounceSpeed: 0.3
-  bounceCooldownTime: 0.15
-  cooldownDamping: 3
-  minBounceInterval: 0.05
+  groundY: 0.75
+  jumpVelocity: 6
+  groundRestitution: 0.6
+  groundEpsilon: 0.05
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
